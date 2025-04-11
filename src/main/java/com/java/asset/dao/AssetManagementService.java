@@ -22,6 +22,15 @@ public interface AssetManagementService {
     boolean updateAsset(Asset asset) throws ClassNotFoundException, SQLException, AssetNotFound;
 
     boolean deleteAsset(int assetId) throws ClassNotFoundException, SQLException, AssetNotFound;
+    
+    // New helper methods
+    boolean isAssetAllocated(int assetId) throws ClassNotFoundException, SQLException;
+
+    int getAllocatedEmployeeId(int assetId) throws ClassNotFoundException, SQLException;
+
+    boolean isAssetReserved(int assetId) throws ClassNotFoundException, SQLException;
+
+    int getApprovedReservationId(int assetId) throws ClassNotFoundException, SQLException;
 
     List<Asset> showAllAssets() throws ClassNotFoundException, SQLException;
 

@@ -69,19 +69,90 @@ public class AssetManagementServiceImpl implements AssetManagementService {
         }
         return true;
     }
-
+    
+    
     @Override
     public boolean deleteAsset(int assetId) throws ClassNotFoundException, SQLException, AssetNotFound {
         connection = ConnectionHelper.getConnection();
-        String cmd = "DELETE FROM assets WHERE asset_id = ?";
-        pst = connection.prepareStatement(cmd);
-        pst.setInt(1, assetId);
-        int rows = pst.executeUpdate();
-        if (rows == 0) {
+
+        // 1. Check if asset exists
+        String checkQuery = "SELECT * FROM assets WHERE asset_id = ?";
+        PreparedStatement checkStmt = connection.prepareStatement(checkQuery);
+        checkStmt.setInt(1, assetId);
+        ResultSet rs = checkStmt.executeQuery();
+        if (!rs.next()) {
             throw new AssetNotFound("Asset with ID " + assetId + " not found.");
         }
-        return true;
+
+        // 2. Check if currently allocated
+        if (isAssetAllocated(assetId)) {
+            int empId = getAllocatedEmployeeId(assetId);
+            System.out.println("The asset is currently allocated to Employee ID: " + empId + ". Please deallocate it first.");
+            return false;
+        }
+
+        // 3. Check if reserved
+        if (isAssetReserved(assetId)) {
+            int resId = getApprovedReservationId(assetId);
+            System.out.println("Asset has an approved reservation (Reservation ID: " + resId + "). Please withdraw it first.");
+            return false;
+        }
+
+        // 4. Delete asset
+        String deleteQuery = "DELETE FROM assets WHERE asset_id = ?";
+        PreparedStatement deleteStmt = connection.prepareStatement(deleteQuery);
+        deleteStmt.setInt(1, assetId);
+        int rows = deleteStmt.executeUpdate();
+        return rows > 0;
     }
+
+    // Utility method: check if asset is allocated
+    @Override
+    public boolean isAssetAllocated(int assetId) throws SQLException, ClassNotFoundException {
+        connection = ConnectionHelper.getConnection();
+        String query = "SELECT * FROM asset_allocations WHERE asset_id = ? AND return_date IS NULL";
+        PreparedStatement stmt = connection.prepareStatement(query);
+        stmt.setInt(1, assetId);
+        ResultSet rs = stmt.executeQuery();
+        return rs.next();
+    }
+
+    @Override
+    public int getAllocatedEmployeeId(int assetId) throws SQLException, ClassNotFoundException {
+        connection = ConnectionHelper.getConnection();
+        String query = "SELECT employee_id FROM asset_allocations WHERE asset_id = ? AND return_date IS NULL";
+        PreparedStatement stmt = connection.prepareStatement(query);
+        stmt.setInt(1, assetId);
+        ResultSet rs = stmt.executeQuery();
+        if (rs.next()) {
+            return rs.getInt("employee_id");
+        }
+        return -1;
+    }
+
+    @Override
+    public boolean isAssetReserved(int assetId) throws SQLException, ClassNotFoundException {
+        connection = ConnectionHelper.getConnection();
+        String query = "SELECT * FROM reservations WHERE asset_id = ? AND status = 'Approved'";
+        PreparedStatement stmt = connection.prepareStatement(query);
+        stmt.setInt(1, assetId);
+        ResultSet rs = stmt.executeQuery();
+        return rs.next();
+    }
+
+    @Override
+    public int getApprovedReservationId(int assetId) throws SQLException, ClassNotFoundException {
+        connection = ConnectionHelper.getConnection();
+        String query = "SELECT reservation_id FROM reservations WHERE asset_id = ? AND status = 'Approved'";
+        PreparedStatement stmt = connection.prepareStatement(query);
+        stmt.setInt(1, assetId);
+        ResultSet rs = stmt.executeQuery();
+        if (rs.next()) {
+            return rs.getInt("reservation_id");
+        }
+        return -1;
+    }
+      
 
     @Override
     public List<Asset> showAllAssets() throws ClassNotFoundException, SQLException {
@@ -133,7 +204,7 @@ public class AssetManagementServiceImpl implements AssetManagementService {
         
         connection = ConnectionHelper.getConnection();
 
-        // Step 1: Check if asset exists and retrieve status
+        // Check if asset exists and retrieve status
         String checkCmd = "SELECT status FROM assets WHERE asset_id = ?";
         PreparedStatement checkStmt = connection.prepareStatement(checkCmd);
         checkStmt.setInt(1, assetId);
@@ -145,7 +216,7 @@ public class AssetManagementServiceImpl implements AssetManagementService {
 
         String status = rs.getString("status");
 
-        // Step 2: If asset is Decommissioned, throw exception or return false
+        //If asset is Decommissioned, throw exception or return false
         if ("Decommissioned".equalsIgnoreCase(status)) {
             System.out.println("Asset is decommissioned and cannot be allocated.");
             return false;
@@ -157,7 +228,7 @@ public class AssetManagementServiceImpl implements AssetManagementService {
         }
         
         
-     // Check last maintenance date from maintenance_records
+        // Check last maintenance date from maintenance_records
         String maintenanceQuery = "SELECT MAX(maintenance_date) AS last_date FROM maintenance_records WHERE asset_id = ?";
         PreparedStatement maintenanceStmt = connection.prepareStatement(maintenanceQuery);
         maintenanceStmt.setInt(1, assetId);
@@ -185,13 +256,11 @@ public class AssetManagementServiceImpl implements AssetManagementService {
             }
         }
 
-        
-
-        // Step 3: Convert allocation date
+        // Convert allocation date
         Date sqlDate = Date.valueOf(allocationDate);  // Assumes "yyyy-MM-dd"
         
         
-        // Step 3: Check if there's an approved reservation for this asset on the allocation date
+        // Check if there's an approved reservation for this asset on the allocation date
         String reservationCheckQuery = "SELECT * FROM reservations WHERE asset_id = ? AND status = 'Approved' AND ? BETWEEN start_date AND end_date";
         PreparedStatement reservationStmt = connection.prepareStatement(reservationCheckQuery);
         reservationStmt.setInt(1, assetId);
@@ -203,7 +272,7 @@ public class AssetManagementServiceImpl implements AssetManagementService {
             return false;
         }
 
-        // Step 4: Allocate asset
+        // Allocate asset
         String insertCmd = "INSERT INTO asset_allocations(asset_id, employee_id, allocation_date) VALUES (?, ?, ?)";
         PreparedStatement insertStmt = connection.prepareStatement(insertCmd);
         insertStmt.setInt(1, assetId);
@@ -212,7 +281,7 @@ public class AssetManagementServiceImpl implements AssetManagementService {
 
         int rows = insertStmt.executeUpdate();
 
-        // Step 5: If successful, update status
+        // If successful, update status
         if (rows > 0) {
             String statusUpdateCmd = "UPDATE assets SET status = 'In_Use' WHERE asset_id = ?";
             PreparedStatement statusStmt = connection.prepareStatement(statusUpdateCmd);
@@ -305,23 +374,22 @@ public class AssetManagementServiceImpl implements AssetManagementService {
     }
 
 
-    
     @Override
-    public boolean performMaintenance(int assetId, String maintenanceDate, String description, double cost) throws ClassNotFoundException, SQLException, AssetNotFound {
+    public boolean performMaintenance(int assetId, String maintenanceDate, String description, double cost)
+            throws ClassNotFoundException, SQLException, AssetNotFound {
 
         connection = ConnectionHelper.getConnection();
 
-        // Step 1: Check if asset exists
+        // 1. Check if asset exists
         String checkAssetQuery = "SELECT * FROM assets WHERE asset_id = ?";
         PreparedStatement checkStmt = connection.prepareStatement(checkAssetQuery);
         checkStmt.setInt(1, assetId);
         ResultSet rs = checkStmt.executeQuery();
-
         if (!rs.next()) {
             throw new AssetNotFound("Asset with ID " + assetId + " not found.");
         }
 
-        // Step 2: Insert maintenance record into maintenance_records
+        // 2. Insert maintenance record
         String insertQuery = "INSERT INTO maintenance_records (asset_id, maintenance_date, description, cost) VALUES (?, ?, ?, ?)";
         PreparedStatement insertStmt = connection.prepareStatement(insertQuery);
         insertStmt.setInt(1, assetId);
@@ -331,19 +399,17 @@ public class AssetManagementServiceImpl implements AssetManagementService {
 
         int rowsInserted = insertStmt.executeUpdate();
 
+        // 3. If inserted, update asset status to Under_Maintenance
         if (rowsInserted > 0) {
-            // Step 3: Update asset status to Under_Maintenance
             String updateStatusQuery = "UPDATE assets SET status = 'Under_Maintenance' WHERE asset_id = ?";
             PreparedStatement statusStmt = connection.prepareStatement(updateStatusQuery);
             statusStmt.setInt(1, assetId);
             statusStmt.executeUpdate();
-
             return true;
         }
 
         return false;
     }
-
 
 
     @Override
@@ -480,12 +546,8 @@ public class AssetManagementServiceImpl implements AssetManagementService {
             insertReservation(assetId, employeeId, reservationDate, startDate, endDate, "Pending");
             return false;
         }
-
-
-
         
-        
-     // 6. Check if asset is currently allocated and not yet returned
+        // 6. Check if asset is currently allocated and not yet returned
         String allocationQuery = "SELECT allocation_date FROM asset_allocations WHERE asset_id = ? AND return_date IS NULL";
         PreparedStatement allocationStmt = connection.prepareStatement(allocationQuery);
         allocationStmt.setInt(1, assetId);
@@ -511,7 +573,6 @@ public class AssetManagementServiceImpl implements AssetManagementService {
                 return false;
             }
         }
-
 
         // 7. Insert reservation as Approved
         insertReservation(assetId, employeeId, reservationDate, startDate, endDate, "Approved");

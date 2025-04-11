@@ -2,7 +2,7 @@ package com.java.asset.main;
 
 
 import java.sql.Connection;
-import java.sql.Date;
+import java.util.Date;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -153,19 +153,51 @@ public class AssetManagementApp {
 	        // Check if asset exists
 	        service.searchAsset(assetId);
 
-	        // Proceed to take update details
+	        
+	        // Check asset current status — cannot update if in use
+	        Asset existingAsset = service.searchAsset(assetId);
+	        if (existingAsset.getStatus() == AssetStatus.In_Use) {
+	            System.out.println("Cannot update the asset. It is currently in use.");
+	            return;
+	        }
+	        // If asset is decommissioned, do not allow update
+	        if (existingAsset.getStatus() == AssetStatus.Decommissioned) {
+	            System.out.println("Asset is decommissioned and cannot be updated.");
+	            return;
+	        }
+
+	        // Create new Asset instance to update
 	        Asset asset = new Asset();
 	        asset.setAssetId(assetId);
+
 	        System.out.print("Enter new name: ");
 	        asset.setName(sc.nextLine());
+
 	        System.out.print("Enter new type: ");
 	        asset.setType(sc.nextLine());
+
 	        System.out.print("Enter new serial number: ");
 	        asset.setSerialNumber(sc.nextLine());
+
 	        System.out.print("Enter new purchase date (yyyy-MM-dd): ");
-	        asset.setPurchaseDate(sdf.parse(sc.nextLine()));
+	        String dateInput = sc.nextLine();
+	        Date purchaseDate;
+	        try {
+	            purchaseDate = sdf.parse(dateInput);
+	            Date today = new Date();
+	            if (purchaseDate.after(today)) {
+	                System.out.println("Purchase date cannot be in the future.");
+	                return;
+	            }
+	            asset.setPurchaseDate(purchaseDate);
+	        } catch (ParseException e) {
+	            System.out.println("Invalid date format. Please use yyyy-MM-dd.");
+	            return;
+	        }
+
 	        System.out.print("Enter new location: ");
 	        asset.setLocation(sc.nextLine());
+
 	        System.out.print("Enter new status (In_Use/Decommissioned/Under_Maintenance/Available): ");
 	        String statusInput = sc.nextLine().trim();
 	        try {
@@ -174,9 +206,15 @@ public class AssetManagementApp {
 	            System.out.println("Invalid status. Please enter one of: In_Use, Decommissioned, Under_Maintenance, Available.");
 	            return;
 	        }
+
 	        System.out.print("Enter new owner ID: ");
-	        asset.setOwnerId(sc.nextInt());
+	        int ownerId = sc.nextInt();
 	        sc.nextLine(); // Consume newline
+	        if (ownerId <= 0) {
+	            System.out.println("Owner ID must be a positive number.");
+	            return;
+	        }
+	        asset.setOwnerId(ownerId);
 
 	        boolean updated = service.updateAsset(asset);
 	        if (updated) {
@@ -186,42 +224,34 @@ public class AssetManagementApp {
 	        }
 	    } catch (AssetNotFound e) {
 	        System.out.println("Asset not found: " + e.getMessage());
-	    } catch (ParseException | ClassNotFoundException | SQLException e) {
+	    } catch (ClassNotFoundException | SQLException e) {
 	        System.out.println("Error updating asset: " + e.getMessage());
 	    }
 	}
 
+	
+	
 	public static void deleteAssetMain() {
 	    try {
 	        System.out.print("Enter Asset ID to delete: ");
 	        int assetId = sc.nextInt();
 	        sc.nextLine(); // consume newline
-	        
+
 	        // Check if asset exists
 	        service.searchAsset(assetId);
 
-	        // Check if the asset is allocated
-	        Connection conn = ConnectionHelper.getConnection();
-	        String allocQuery = "SELECT employee_id, allocation_date FROM asset_allocations WHERE asset_id = ? AND return_date IS NULL";
-	        PreparedStatement allocStmt = conn.prepareStatement(allocQuery);
-	        allocStmt.setInt(1, assetId);
-	        ResultSet allocRs = allocStmt.executeQuery();
-
-	        if (allocRs.next()) {
-	            int empId = allocRs.getInt("employee_id");
-	            Date allocDate = allocRs.getDate("allocation_date");
-
-	            System.out.println("The asset is currently allocated to Employee ID: " + empId + " since " + allocDate);
+	        // Ask for deallocation if needed
+	        if (service.isAssetAllocated(assetId)) {
+	            int empId = service.getAllocatedEmployeeId(assetId);
+	            System.out.println("The asset is currently allocated to Employee ID: " + empId);
 	            System.out.print("Do you want to deallocate it first? (YES/NO): ");
-	            String answer = sc.nextLine().trim();
+	            String input = sc.nextLine().trim();
 
-	            if (answer.equalsIgnoreCase("YES")) {
+	            if (input.equalsIgnoreCase("YES")) {
 	                System.out.print("Enter Return Date (yyyy-MM-dd): ");
 	                String returnDate = sc.nextLine();
 	                boolean deallocated = service.deallocateAsset(assetId, empId, returnDate);
-	                if (deallocated) {
-	                    System.out.println("Asset successfully deallocated. Proceeding with deletion...");
-	                } else {
+	                if (!deallocated) {
 	                    System.out.println("Deallocation failed. Cannot proceed with deletion.");
 	                    return;
 	                }
@@ -231,26 +261,20 @@ public class AssetManagementApp {
 	            }
 	        }
 
-	        // Check if the asset has an approved reservation
-	        String resQuery = "SELECT reservation_id FROM reservations WHERE asset_id = ? AND status = 'Approved'";
-	        PreparedStatement resStmt = conn.prepareStatement(resQuery);
-	        resStmt.setInt(1, assetId);
-	        ResultSet resRs = resStmt.executeQuery();
-
-	        if (resRs.next()) {
-	            int resId = resRs.getInt("reservation_id");
-
+	        // Ask for reservation withdrawal if needed
+	        if (service.isAssetReserved(assetId)) {
+	            int resId = service.getApprovedReservationId(assetId);
 	            System.out.println("Asset has an approved reservation (Reservation ID: " + resId + ").");
-	            System.out.print("Do you want to withdraw the reservation first? (YES/NO): ");
-	            String ans = sc.nextLine().trim();
+	            System.out.print("Do you want to withdraw it first? (YES/NO): ");
+	            String input = sc.nextLine().trim();
 
-	            if (ans.equalsIgnoreCase("YES")) {
+	            if (input.equalsIgnoreCase("YES")) {
 	                boolean withdrawn = service.withdrawReservation(resId);
-	                if (withdrawn) {
-	                    System.out.println("Reservation withdrawn. Proceeding with deletion...");
-	                } else {
+	                if (!withdrawn) {
 	                    System.out.println("Failed to withdraw reservation. Cannot proceed with deletion.");
 	                    return;
+	                }else {
+	                	System.out.println("Reservation withdrawn. Proceeding with deletion...");
 	                }
 	            } else {
 	                System.out.println("Cannot delete while reservation is active.");
@@ -258,36 +282,49 @@ public class AssetManagementApp {
 	            }
 	        }
 
-	        // Finally delete the asset
+	        // Final delete
 	        boolean deleted = service.deleteAsset(assetId);
 	        if (deleted) {
 	            System.out.println("Asset deleted successfully.");
 	        } else {
 	            System.out.println("Failed to delete asset.");
 	        }
-
 	    } catch (AssetNotFound e) {
 	        System.out.println("Asset not found: " + e.getMessage());
 	    } catch (Exception e) {
 	        System.out.println("Error: " + e.getMessage());
 	    }
 	}
-
+	
 
 	public static void showAllAssetsMain() {
-		try {
-			List<Asset> assetList = service.showAllAssets();
-			if (assetList.isEmpty()) {
-				System.out.println("No assets found.");
-			} else {
-				for (Asset asset : assetList) {
-					System.out.println(asset);
-				}
-			}
-		} catch (ClassNotFoundException | SQLException e) {
-			System.out.println("Error fetching asset list: " + e.getMessage());
-		}
+	    try {
+	        List<Asset> assetList = service.showAllAssets();
+	        if (assetList.isEmpty()) {
+	            System.out.println("No assets found.");
+	        } else {
+	            System.out.println("-------------------------------------------------------------------------------------------------------------------------------------");
+	            System.out.printf("%-10s %-20s %-15s %-18s %-15s %-20s %-20s %-10s%n", 
+	                              "Asset ID", "Name", "Type", "Serial Number", "Purchase Date", "Location", "Status", "Owner ID");
+	            System.out.println("-------------------------------------------------------------------------------------------------------------------------------------");
+	            for (Asset asset : assetList) {
+	                System.out.printf("%-10d %-20s %-15s %-18s %-15s %-20s %-20s %-10d%n",
+	                        asset.getAssetId(),
+	                        asset.getName(),
+	                        asset.getType(),
+	                        asset.getSerialNumber(),
+	                        new SimpleDateFormat("yyyy-MM-dd").format(asset.getPurchaseDate()),
+	                        asset.getLocation(),
+	                        asset.getStatus(),
+	                        asset.getOwnerId());
+	            }
+	            System.out.println("-------------------------------------------------------------------------------------------------------------------------------------");
+	        }
+	    } catch (ClassNotFoundException | SQLException e) {
+	        System.out.println("Error fetching asset list: " + e.getMessage());
+	    }
 	}
+
 	
 	public static void searchAssetMain() throws AssetNotFound {
 	    try {
@@ -338,24 +375,33 @@ public class AssetManagementApp {
 
 
 	public static void showAssetAllocationsMain() {
-		try {
-			List<AssetAllocations> allocations = service.showAssetAllocations();
-			if (allocations.isEmpty()) {
-				System.out.println("No allocations found.");
-			} else {
-				for (AssetAllocations alloc : allocations) {
-					System.out.println("Allocation ID: " + alloc.getAllocationId());
-					System.out.println("Asset ID: " + alloc.getAssetId());
-					System.out.println("Employee ID: " + alloc.getEmployeeId());
-					System.out.println("Allocation Date: " + alloc.getAllocationDate());
-					System.out.println("Return Date: " + alloc.getReturnDate());
-					System.out.println("-------------------------------");
-				}
-			}
-		} catch (ClassNotFoundException | SQLException e) {
-			System.out.println("Error showing asset allocations: " + e.getMessage());
-		}
+	    try {
+	        List<AssetAllocations> allocations = service.showAssetAllocations();
+	        if (allocations.isEmpty()) {
+	            System.out.println("No allocations found.");
+	        } else {
+	            System.out.println("--------------------------------------------------------------------------------------");
+	            System.out.printf("%-15s %-10s %-15s %-20s %-20s%n", 
+	                              "Allocation ID", "Asset ID", "Employee ID", "Allocation Date", "Return Date");
+	            System.out.println("--------------------------------------------------------------------------------------");
+	            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
+	            for (AssetAllocations alloc : allocations) {
+	                String allocDate = (alloc.getAllocationDate() != null) ? sdf.format(alloc.getAllocationDate()) : "N/A";
+	                String returnDate = (alloc.getReturnDate() != null) ? sdf.format(alloc.getReturnDate()) : "N/A";
+	                System.out.printf("%-15d %-10d %-15d %-20s %-20s%n",
+	                        alloc.getAllocationId(),
+	                        alloc.getAssetId(),
+	                        alloc.getEmployeeId(),
+	                        allocDate,
+	                        returnDate);
+	            }
+	            System.out.println("--------------------------------------------------------------------------------------");
+	        }
+	    } catch (ClassNotFoundException | SQLException e) {
+	        System.out.println("Error showing asset allocations: " + e.getMessage());
+	    }
 	}
+
 	
 	public static void deallocateAssetMain() {
 	    try {
@@ -396,71 +442,50 @@ public class AssetManagementApp {
 	}
 
 
-
 	public static void performMaintenanceMain() {
 	    try {
 	        System.out.print("Enter Asset ID: ");
 	        int assetId = sc.nextInt();
-	        sc.nextLine(); // consume newline
+	        sc.nextLine(); // Consume newline
 
 	        // Check if asset exists
 	        service.searchAsset(assetId);
 
-	        // Check if asset is currently allocated
-	        Connection con = ConnectionHelper.getConnection();
-	        String allocCheck = "SELECT employee_id, allocation_date FROM asset_allocations WHERE asset_id = ? AND return_date IS NULL";
-	        PreparedStatement allocStmt = con.prepareStatement(allocCheck);
-	        allocStmt.setInt(1, assetId);
-	        ResultSet allocRs = allocStmt.executeQuery();
-
-	        if (allocRs.next()) {
-	            int empId = allocRs.getInt("employee_id");
-	            Date allocDate = allocRs.getDate("allocation_date");
-
-	            System.out.println("The asset is currently allocated to Employee ID: " + empId + " since " + allocDate);
+	        // Check allocation
+	        if (service.isAssetAllocated(assetId)) {
+	            int empId = service.getAllocatedEmployeeId(assetId);
+	            System.out.println("The asset is currently allocated to Employee ID: " + empId);
 	            System.out.print("Do you want to deallocate it first? (YES/NO): ");
-	            String answer = sc.nextLine().trim();
-
-	            if (answer.equalsIgnoreCase("YES")) {
+	            String response = sc.nextLine().trim();
+	            if (response.equalsIgnoreCase("YES")) {
 	                System.out.print("Enter Return Date (yyyy-MM-dd): ");
 	                String returnDate = sc.nextLine();
 	                boolean deallocated = service.deallocateAsset(assetId, empId, returnDate);
-	                if (deallocated) {
-	                    System.out.println("Asset successfully deallocated. Proceeding with maintenance...");
-	                } else {
+	                if (!deallocated) {
 	                    System.out.println("Deallocation failed. Cannot proceed with maintenance.");
 	                    return;
+	                } else {
+	                    System.out.println("Asset successfully deallocated.");
 	                }
 	            } else {
 	                System.out.println("Cannot perform maintenance while asset is in use.");
 	                return;
 	            }
 	        }
-	        
-	        
-	     // Step 2: Check if asset is currently reserved
-	        String reserveCheck = "SELECT reservation_id, employee_id, start_date, end_date FROM reservations WHERE asset_id = ? AND status = 'Approved'";
-	        PreparedStatement reserveStmt = con.prepareStatement(reserveCheck);
-	        reserveStmt.setInt(1, assetId);
-	        ResultSet reserveRs = reserveStmt.executeQuery();
 
-	        if (reserveRs.next()) {
-	            int resId = reserveRs.getInt("reservation_id");
-	            int empId = reserveRs.getInt("employee_id");
-	            Date start = reserveRs.getDate("start_date");
-	            Date end = reserveRs.getDate("end_date");
-
-	            System.out.println("The asset is currently reserved by Employee ID: " + empId + " from " + start + " to " + end);
+	        // Check reservation
+	        if (service.isAssetReserved(assetId)) {
+	            int resId = service.getApprovedReservationId(assetId);
+	            System.out.println("The asset is currently reserved (Reservation ID: " + resId + ")");
 	            System.out.print("Do you want to withdraw the reservation? (YES/NO): ");
-	            String input = sc.nextLine().trim();
-
-	            if (input.equalsIgnoreCase("YES")) {
+	            String answer = sc.nextLine().trim();
+	            if (answer.equalsIgnoreCase("YES")) {
 	                boolean withdrawn = service.withdrawReservation(resId);
-	                if (withdrawn) {
-	                    System.out.println("Reservation withdrawn. Proceeding...");
-	                } else {
+	                if (!withdrawn) {
 	                    System.out.println("Failed to withdraw reservation. Cannot proceed.");
 	                    return;
+	                } else {
+	                    System.out.println("Reservation withdrawn successfully.");
 	                }
 	            } else {
 	                System.out.println("Cannot perform maintenance while asset is reserved.");
@@ -471,10 +496,8 @@ public class AssetManagementApp {
 	        // Proceed with maintenance
 	        System.out.print("Enter Maintenance Date (yyyy-MM-dd): ");
 	        String date = sc.nextLine();
-
 	        System.out.print("Enter Description: ");
 	        String desc = sc.nextLine();
-
 	        System.out.print("Enter Cost: ");
 	        double cost = sc.nextDouble();
 
@@ -491,7 +514,6 @@ public class AssetManagementApp {
 	        System.out.println("Error: " + e.getMessage());
 	    }
 	}
-
 	
 
 	public static void showAllMaintenanceRecordsMain() {
@@ -500,19 +522,30 @@ public class AssetManagementApp {
 	        if (records.isEmpty()) {
 	            System.out.println("No maintenance records found.");
 	        } else {
+	            System.out.println("------------------------------------------------------------------------------------------------");
+	            System.out.printf("%-15s %-10s %-20s %-30s %-10s%n",
+	                    "Maintenance ID", "Asset ID", "Maintenance Date", "Description", "Cost");
+	            System.out.println("------------------------------------------------------------------------------------------------");
+
+	            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
+
 	            for (MaintenanceRecord rec : records) {
-	                System.out.println("Maintenance ID: " + rec.getMaintenanceId());
-	                System.out.println("Asset ID: " + rec.getAssetId());
-	                System.out.println("Maintenance Date: " + rec.getMaintenanceDate());
-	                System.out.println("Description: " + rec.getDescription());
-	                System.out.println("Cost: " + rec.getCost());
-	                System.out.println("-----------------------------------");
+	                String date = (rec.getMaintenanceDate() != null) ? sdf.format(rec.getMaintenanceDate()) : "N/A";
+	                System.out.printf("%-15d %-10d %-20s %-30s %-10.2f%n",
+	                        rec.getMaintenanceId(),
+	                        rec.getAssetId(),
+	                        date,
+	                        rec.getDescription(),
+	                        rec.getCost());
 	            }
+
+	            System.out.println("------------------------------------------------------------------------------------------------");
 	        }
 	    } catch (Exception e) {
 	        System.out.println("Error fetching maintenance records: " + e.getMessage());
 	    }
 	}
+
 	
 	
 	public static void reserveAssetMain() throws AssetNotFound, AssetNotMaintain {
@@ -575,21 +608,35 @@ public class AssetManagementApp {
 	        if (reservations.isEmpty()) {
 	            System.out.println("No reservations found.");
 	        } else {
+	            System.out.println("------------------------------------------------------------------------------------------------------------");
+	            System.out.printf("%-15s %-10s %-13s %-18s %-15s %-15s %-10s%n",
+	                    "Reservation ID", "Asset ID", "Employee ID", "Reservation Date", "Start Date", "End Date", "Status");
+	            System.out.println("------------------------------------------------------------------------------------------------------------");
+
+	            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
+
 	            for (Reservations res : reservations) {
-	                System.out.println("Reservation ID: " + res.getReservationId());
-	                System.out.println("Asset ID: " + res.getAssetId());
-	                System.out.println("Employee ID: " + res.getEmployeeId());
-	                System.out.println("Reservation Date: " + res.getReservationDate());
-	                System.out.println("Start Date: " + res.getStartDate());
-	                System.out.println("End Date: " + res.getEndDate());
-	                System.out.println("Status: " + res.getStatus());
-	                System.out.println("----------------------------------");
+	                String resDate = (res.getReservationDate() != null) ? sdf.format(res.getReservationDate()) : "N/A";
+	                String start = (res.getStartDate() != null) ? sdf.format(res.getStartDate()) : "N/A";
+	                String end = (res.getEndDate() != null) ? sdf.format(res.getEndDate()) : "N/A";
+
+	                System.out.printf("%-15d %-10d %-13d %-18s %-15s %-15s %-10s%n",
+	                        res.getReservationId(),
+	                        res.getAssetId(),
+	                        res.getEmployeeId(),
+	                        resDate,
+	                        start,
+	                        end,
+	                        res.getStatus());
 	            }
+
+	            System.out.println("------------------------------------------------------------------------------------------------------------");
 	        }
 	    } catch (Exception e) {
 	        System.out.println("Error retrieving reservations: " + e.getMessage());
 	    }
 	}
+
 
 
 }
